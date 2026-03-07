@@ -14,12 +14,13 @@ CORS(app)
 
 BASE_DIR = os.path.dirname(__file__)
 DATA_DIR = os.path.join(BASE_DIR, 'data')
+PUBLIC_DIR = os.path.join(BASE_DIR, 'public')
 
 
 @app.route('/')
 def index():
     """Serve the main HTML page."""
-    return send_from_directory(BASE_DIR, 'index.html')
+    return send_from_directory(PUBLIC_DIR, 'index.html')
 
 
 @app.route('/data/<path:filename>')
