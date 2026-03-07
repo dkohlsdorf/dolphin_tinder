@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dolphin Tinder</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      margin: 0;
+      padding: 20px;
+      min-height: 100vh;
+    }
+    h1 { margin: 0 0 10px; color: #fff; }
+    .progress { color: #888; margin-bottom: 20px; }
+    .comparison-container {
+      display: flex;
+      gap: 40px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 30px;
+    }
+    .audio-panel {
+      background: #0d0d1a;
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .audio-panel h3 {
+      margin: 0 0 15px;
+      color: #aaa;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .buttons-container {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      margin-bottom: 20px;
+    }
+    .btn {
+      padding: 15px 50px;
+      border-radius: 8px;
+      border: none;
+      font-size: 18px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .btn:active {
+      transform: translateY(0);
+    }
+    .btn-same {
+      background: #27ae60;
+      color: #fff;
+    }
+    .btn-same:hover { background: #2ecc71; }
+    .btn-different {
+      background: #c0392b;
+      color: #fff;
+    }
+    .btn-different:hover { background: #e74c3c; }
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .btn-download {
+      background: #3498db;
+      color: #fff;
+      padding: 10px 20px;
+      font-size: 14px;
+    }
+    .btn-download:hover { background: #2980b9; }
+    .done-message {
+      text-align: center;
+      padding: 60px;
+      background: #0d0d1a;
+      border-radius: 8px;
+    }
+    .done-message h2 { color: #27ae60; }
+    .keyboard-hint {
+      text-align: center;
+      color: #666;
+      font-size: 12px;
+      margin-top: 10px;
+    }
+    .loading {
+      text-align: center;
+      padding: 60px;
+      color: #888;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      margin-bottom: 10px;
+    }
+    .label-selector {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .label-selector label {
+      color: #888;
+      font-size: 14px;
+    }
+    .label-selector select {
+      padding: 8px 12px;
+      border-radius: 4px;
+      border: 1px solid #444;
+      background: #0d0d1a;
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .label-selector select:focus {
+      outline: none;
+      border-color: #27ae60;
+    }
+    .results-info {
+      color: #888;
+      font-size: 12px;
+      margin-left: auto;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // Storage keys
+    const STORAGE_KEY_RESULTS = 'dolphin_tinder_results';
+    const STORAGE_KEY_PROGRESS = 'dolphin_tinder_progress';
+
+    // Load results from localStorage
+    function loadResults() {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY_RESULTS);
+        return stored ? JSON.parse(stored) : [];
+      } catch {
+        return [];
+      }
+    }
+
+    // Save results to localStorage
+    function saveResults(results) {
+      localStorage.setItem(STORAGE_KEY_RESULTS, JSON.stringify(results));
+    }
+
+    // Load progress from localStorage
+    function loadProgress() {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY_PROGRESS);
+        return stored ? JSON.parse(stored) : {};
+      } catch {
+        return {};
+      }
+    }
+
+    // Save progress to localStorage
+    function saveProgress(progress) {
+      localStorage.setItem(STORAGE_KEY_PROGRESS, JSON.stringify(progress));
+    }
+
+    // Download results as CSV
+    function downloadResultsCSV(results, label = null) {
+      const filtered = label ? results.filter(r => r.label === label) : results;
+      const header = 'i,j,label\n';
+      const rows = filtered.map(r =>
+        `${r.anchor_idx},${r.neighbor_idx},${r.same ? 'same' : 'different'}`
+      ).join('\n');
+      const csv = header + rows;
+
+      const filename = label ? `labeled_pairs_${label}.csv` : 'labeled_pairs.csv';
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // SpectrogramViewer Component
+    function SpectrogramViewer({ audioBuffer, startSample, endSample, sampleRate, width = 600, height = 200, fftSize = 2048 }) {
+      const canvasRef = useRef(null);
+
+      useEffect(() => {
+        if (!audioBuffer || startSample === undefined || endSample === undefined) return;
+
+        const channelData = audioBuffer.getChannelData(0);
+        const segment = channelData.slice(startSample, endSample);
+
+        const spectrogramData = computeSpectrogram(segment, fftSize);
+        renderSpectrogram(spectrogramData, canvasRef.current, width, height);
+      }, [audioBuffer, startSample, endSample, width, height, fftSize]);
+
+      return (
+        <canvas
+          ref={canvasRef}
+          width={width}
+          height={height}
+          style={{ display: 'block', background: '#000', borderRadius: '4px' }}
+        />
+      );
+    }
+
+    function computeSpectrogram(channelData, fftSize) {
+      const hopSize = fftSize / 4;
+      const numFrames = Math.floor((channelData.length - fftSize) / hopSize) + 1;
+      const numBins = fftSize / 2;
+      const spectrogram = [];
+      const window = createHannWindow(fftSize);
+
+      for (let frame = 0; frame < numFrames; frame++) {
+        const start = frame * hopSize;
+        const segment = new Float32Array(fftSize);
+        for (let i = 0; i < fftSize; i++) {
+          segment[i] = (channelData[start + i] || 0) * window[i];
+        }
+        const fftResult = fft(segment);
+        const magnitudes = new Float32Array(numBins);
+        for (let i = 0; i < numBins; i++) {
+          const real = fftResult.real[i];
+          const imag = fftResult.imag[i];
+          const magnitude = Math.sqrt(real * real + imag * imag);
+          magnitudes[i] = 20 * Math.log10(magnitude + 1e-10);
+        }
+        spectrogram.push(magnitudes);
+      }
+      return spectrogram;
+    }
+
+    function createHannWindow(size) {
+      const window = new Float32Array(size);
+      for (let i = 0; i < size; i++) {
+        window[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (size - 1)));
+      }
+      return window;
+    }
+
+    function fft(signal) {
+      const n = signal.length;
+      if (n === 1) return { real: [signal[0]], imag: [0] };
+
+      const real = new Float32Array(n);
+      const imag = new Float32Array(n);
+      const bits = Math.log2(n);
+
+      for (let i = 0; i < n; i++) {
+        const reversed = reverseBits(i, bits);
+        real[i] = signal[reversed];
+        imag[i] = 0;
+      }
+
+      for (let size = 2; size <= n; size *= 2) {
+        const halfSize = size / 2;
+        const angleStep = -2 * Math.PI / size;
+        for (let i = 0; i < n; i += size) {
+          for (let j = 0; j < halfSize; j++) {
+            const angle = angleStep * j;
+            const cos = Math.cos(angle);
+            const sin = Math.sin(angle);
+            const evenIdx = i + j;
+            const oddIdx = i + j + halfSize;
+            const tReal = cos * real[oddIdx] - sin * imag[oddIdx];
+            const tImag = sin * real[oddIdx] + cos * imag[oddIdx];
+            real[oddIdx] = real[evenIdx] - tReal;
+            imag[oddIdx] = imag[evenIdx] - tImag;
+            real[evenIdx] = real[evenIdx] + tReal;
+            imag[evenIdx] = imag[evenIdx] + tImag;
+          }
+        }
+      }
+      return { real, imag };
+    }
+
+    function reverseBits(x, bits) {
+      let result = 0;
+      for (let i = 0; i < bits; i++) {
+        result = (result << 1) | (x & 1);
+        x >>= 1;
+      }
+      return result;
+    }
+
+    function renderSpectrogram(spectrogram, canvas, width, height) {
+      if (!canvas || spectrogram.length === 0) return;
+      const ctx = canvas.getContext('2d');
+      const numFrames = spectrogram.length;
+      const numBins = spectrogram[0].length;
+
+      let min = Infinity, max = -Infinity;
+      for (const frame of spectrogram) {
+        for (const val of frame) {
+          if (val > -100) {
+            min = Math.min(min, val);
+            max = Math.max(max, val);
+          }
+        }
+      }
+
+      const imageData = ctx.createImageData(width, height);
+      const pixels = imageData.data;
+
+      for (let x = 0; x < width; x++) {
+        const frameIdx = Math.floor((x / width) * numFrames);
+        const frame = spectrogram[Math.min(frameIdx, numFrames - 1)];
+        for (let y = 0; y < height; y++) {
+          const binIdx = Math.floor(((height - 1 - y) / height) * numBins);
+          const value = frame[Math.min(binIdx, numBins - 1)];
+          const normalized = Math.max(0, Math.min(1, (value - min) / (max - min)));
+          const gray = Math.floor(normalized * 255);
+          const idx = (y * width + x) * 4;
+          pixels[idx] = gray;
+          pixels[idx + 1] = gray;
+          pixels[idx + 2] = gray;
+          pixels[idx + 3] = 255;
+        }
+      }
+      ctx.putImageData(imageData, 0, 0);
+    }
+
+    // Audio Panel with spectrogram and playback - loads individual segment file
+    function AudioPanel({ title, segmentIdx, fftSize }) {
+      const [audioBuffer, setAudioBuffer] = useState(null);
+      const [audioUrl, setAudioUrl] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+
+      useEffect(() => {
+        if (segmentIdx === undefined) return;
+
+        let cancelled = false;
+        setLoading(true);
+        setError(null);
+
+        async function loadSegment() {
+          try {
+            const res = await fetch(`/data/segments/${segmentIdx}.wav`);
+            if (!res.ok) throw new Error(`Failed to load segment ${segmentIdx}`);
+            const arrayBuffer = await res.arrayBuffer();
+
+            if (cancelled) return;
+
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+
+            if (cancelled) {
+              audioCtx.close();
+              return;
+            }
+
+            setAudioBuffer(decoded);
+
+            // Create blob URL for audio playback
+            const blob = new Blob([arrayBuffer], { type: 'audio/wav' });
+            setAudioUrl(URL.createObjectURL(blob));
+            setLoading(false);
+          } catch (err) {
+            if (!cancelled) {
+              setError(err.message);
+              setLoading(false);
+            }
+          }
+        }
+
+        loadSegment();
+
+        return () => {
+          cancelled = true;
+          if (audioUrl) URL.revokeObjectURL(audioUrl);
+        };
+      }, [segmentIdx]);
+
+      return (
+        <div className="audio-panel">
+          <h3>{title}</h3>
+          {loading && <div style={{ padding: '20px', color: '#888' }}>Loading segment...</div>}
+          {error && <div style={{ padding: '20px', color: '#f44' }}>Error: {error}</div>}
+          {audioBuffer && (
+            <SpectrogramViewer
+              audioBuffer={audioBuffer}
+              startSample={0}
+              endSample={audioBuffer.length}
+              width={800}
+              height={300}
+              fftSize={fftSize}
+            />
+          )}
+          {audioUrl && (
+            <audio
+              controls
+              src={audioUrl}
+              style={{ width: '100%', marginTop: '10px' }}
+            />
+          )}
+        </div>
+      );
+    }
+
+    // Main App
+    function App() {
+      const [loading, setLoading] = useState(true);
+      const [loadingStatus, setLoadingStatus] = useState('Initializing...');
+      const [error, setError] = useState(null);
+
+      // Data
+      const [pairs, setPairs] = useState([]);
+
+      // State
+      const [currentLabel, setCurrentLabel] = useState('WSTL');
+      const [currentPairIdx, setCurrentPairIdx] = useState(0);
+      const [results, setResults] = useState([]);
+      const [submitting, setSubmitting] = useState(false);
+
+      // Load saved results on mount
+      useEffect(() => {
+        const savedResults = loadResults();
+        setResults(savedResults);
+      }, []);
+
+      // Load pairs when label changes
+      useEffect(() => {
+        async function loadPairs() {
+          try {
+            setLoading(true);
+            setLoadingStatus('Loading pairs...');
+            const res = await fetch(`/pairs/sampling_pairs_${currentLabel}.json`);
+            if (!res.ok) throw new Error(`Failed to load pairs for ${currentLabel}`);
+            const pairsData = await res.json();
+            setPairs(pairsData);
+
+            // Load saved progress for this label
+            const savedProgress = loadProgress();
+            const savedIdx = savedProgress[currentLabel] || 0;
+            setCurrentPairIdx(savedIdx);
+
+            console.log(`Loaded ${pairsData.length} pairs for ${currentLabel}, starting at ${savedIdx}`);
+            setLoading(false);
+          } catch (err) {
+            console.error('Failed to load pairs:', err);
+            setError(err.message);
+            setLoading(false);
+          }
+        }
+        loadPairs();
+      }, [currentLabel]);
+
+      // Save progress when it changes
+      useEffect(() => {
+        if (pairs.length > 0) {
+          const progress = loadProgress();
+          progress[currentLabel] = currentPairIdx;
+          saveProgress(progress);
+        }
+      }, [currentPairIdx, currentLabel, pairs.length]);
+
+      const handleSubmit = useCallback((same) => {
+        if (submitting || currentPairIdx >= pairs.length) return;
+
+        setSubmitting(true);
+
+        const [anchorIdx, neighborIdx] = pairs[currentPairIdx];
+        const result = {
+          timestamp: new Date().toISOString(),
+          label: currentLabel,
+          anchor_idx: anchorIdx,
+          neighbor_idx: neighborIdx,
+          same: same
+        };
+
+        const newResults = [...results, result];
+        setResults(newResults);
+        saveResults(newResults);
+
+        setCurrentPairIdx(prev => prev + 1);
+        setSubmitting(false);
+      }, [currentPairIdx, pairs, currentLabel, results, submitting]);
+
+      const handleLabelChange = useCallback((newLabel) => {
+        setCurrentLabel(newLabel);
+      }, []);
+
+      // Keyboard shortcuts
+      useEffect(() => {
+        const handleKeyDown = (e) => {
+          if (e.key === 'ArrowLeft' || e.key === 's' || e.key === 'S') {
+            handleSubmit(true);
+          } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+            handleSubmit(false);
+          }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+      }, [handleSubmit]);
+
+      const currentPair = pairs[currentPairIdx];
+      const done = currentPairIdx >= pairs.length && pairs.length > 0;
+      const labelResults = results.filter(r => r.label === currentLabel);
+
+      const labelSelector = (
+        <div className="label-selector">
+          <label>Label Type:</label>
+          <select
+            value={currentLabel}
+            onChange={(e) => handleLabelChange(e.target.value)}
+            disabled={submitting}
+          >
+            <option value="WSTL">WSTL</option>
+            <option value="BURST">BURST + ECHO</option>
+          </select>
+        </div>
+      );
+
+      const resultsInfo = (
+        <div className="results-info">
+          {labelResults.length} labels for {currentLabel}
+          {labelResults.length > 0 && (
+            <button
+              className="btn btn-download"
+              onClick={() => downloadResultsCSV(results, currentLabel)}
+              style={{ marginLeft: '10px' }}
+            >
+              Download {currentLabel} CSV
+            </button>
+          )}
+        </div>
+      );
+
+      if (loading) {
+        return (
+          <div>
+            <div className="header">
+              <h1>Dolphin Tinder</h1>
+            </div>
+            <div className="loading">
+              {error ? `Error: ${error}` : loadingStatus}
+            </div>
+          </div>
+        );
+      }
+
+      if (done) {
+        return (
+          <div>
+            <div className="header">
+              <h1>Dolphin Tinder</h1>
+              {labelSelector}
+              {resultsInfo}
+            </div>
+            <div className="done-message">
+              <h2>All Done!</h2>
+              <p>You've labeled all {pairs.length} pairs for {currentLabel}.</p>
+              <p>{labelResults.length} results saved for this label.</p>
+              <div style={{ marginTop: '20px', display: 'flex', gap: '10px', justifyContent: 'center' }}>
+                <button
+                  className="btn btn-download"
+                  onClick={() => downloadResultsCSV(results, currentLabel)}
+                >
+                  Download {currentLabel} CSV
+                </button>
+                {results.length > labelResults.length && (
+                  <button
+                    className="btn btn-download"
+                    onClick={() => downloadResultsCSV(results)}
+                  >
+                    Download All ({results.length})
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div>
+          <div className="header">
+            <h1>Dolphin Tinder</h1>
+            {labelSelector}
+            {resultsInfo}
+          </div>
+          <p className="progress">
+            Pair {currentPairIdx + 1} of {pairs.length} ({currentLabel})
+          </p>
+
+          {currentPair && (
+            <>
+              <div className="comparison-container">
+                <AudioPanel
+                  title={`Audio A (Segment #${currentPair[0]})`}
+                  segmentIdx={currentPair[0]}
+                  fftSize={512}
+                />
+                <AudioPanel
+                  title={`Audio B (Segment #${currentPair[1]})`}
+                  segmentIdx={currentPair[1]}
+                  fftSize={512}
+                />
+              </div>
+
+              <div className="buttons-container">
+                <button
+                  className="btn btn-same"
+                  onClick={() => handleSubmit(true)}
+                  disabled={submitting}
+                >
+                  Same
+                </button>
+                <button
+                  className="btn btn-different"
+                  onClick={() => handleSubmit(false)}
+                  disabled={submitting}
+                >
+                  Different
+                </button>
+              </div>
+
+              <p className="keyboard-hint">
+                Keyboard: S or Left Arrow = Same | D or Right Arrow = Different
+              </p>
+            </>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
