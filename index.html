@@ -30,6 +30,9 @@
       background: #0d0d1a;
       border-radius: 8px;
       padding: 20px;
+      flex: 1;
+      min-width: 300px;
+      max-width: 600px;
     }
     .audio-panel h3 {
       margin: 0 0 15px;
@@ -52,6 +55,8 @@
       font-weight: bold;
       cursor: pointer;
       transition: transform 0.1s, box-shadow 0.1s;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
     }
     .btn:hover {
       transform: translateY(-2px);
@@ -70,6 +75,11 @@
       color: #fff;
     }
     .btn-different:hover { background: #e74c3c; }
+    .btn-noise {
+      background: #7f8c8d;
+      color: #fff;
+    }
+    .btn-noise:hover { background: #95a5a6; }
     .btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
@@ -82,6 +92,13 @@
       font-size: 14px;
     }
     .btn-download:hover { background: #2980b9; }
+    .btn-reset {
+      background: #e67e22;
+      color: #fff;
+      padding: 10px 20px;
+      font-size: 14px;
+    }
+    .btn-reset:hover { background: #d35400; }
     .done-message {
       text-align: center;
       padding: 60px;
@@ -132,6 +149,69 @@
       color: #888;
       font-size: 12px;
       margin-left: auto;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .spectrogram-canvas {
+      display: block;
+      background: #000;
+      border-radius: 4px;
+      width: 100%;
+      height: auto;
+    }
+
+    /* Mobile styles */
+    @media (max-width: 768px) {
+      body {
+        padding: 10px;
+      }
+      h1 {
+        font-size: 1.5rem;
+      }
+      .header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+      }
+      .results-info {
+        margin-left: 0;
+        width: 100%;
+        justify-content: flex-start;
+      }
+      .comparison-container {
+        gap: 20px;
+      }
+      .audio-panel {
+        width: 100%;
+        padding: 15px;
+      }
+      .buttons-container {
+        flex-direction: column;
+        gap: 10px;
+      }
+      .btn {
+        width: 100%;
+        padding: 18px 20px;
+        font-size: 16px;
+      }
+      .btn-download, .btn-reset {
+        padding: 12px 16px;
+        font-size: 13px;
+      }
+      .keyboard-hint {
+        display: none;
+      }
+      .done-message {
+        padding: 30px 20px;
+      }
+      .label-selector {
+        width: 100%;
+      }
+      .label-selector select {
+        flex: 1;
+      }
     }
   </style>
 </head>
@@ -175,12 +255,21 @@
       localStorage.setItem(STORAGE_KEY_PROGRESS, JSON.stringify(progress));
     }
 
+    // Reset all state
+    function resetState() {
+      if (confirm('Are you sure you want to reset? This will clear all labels and progress.')) {
+        localStorage.removeItem(STORAGE_KEY_RESULTS);
+        localStorage.removeItem(STORAGE_KEY_PROGRESS);
+        window.location.reload();
+      }
+    }
+
     // Download results as CSV
     function downloadResultsCSV(results, label = null) {
       const filtered = label ? results.filter(r => r.label === label) : results;
-      const header = 'i,j,label\n';
+      const header = 'i,j,result,label_type\n';
       const rows = filtered.map(r =>
-        `${r.anchor_idx},${r.neighbor_idx},${r.same ? 'same' : 'different'}`
+        `${r.anchor_idx},${r.neighbor_idx},${r.result},${r.label}`
       ).join('\n');
       const csv = header + rows;
 
@@ -195,8 +284,28 @@
     }
 
     // SpectrogramViewer Component
-    function SpectrogramViewer({ audioBuffer, startSample, endSample, sampleRate, width = 600, height = 200, fftSize = 2048 }) {
+    function SpectrogramViewer({ audioBuffer, startSample, endSample, sampleRate, fftSize = 2048 }) {
       const canvasRef = useRef(null);
+      const containerRef = useRef(null);
+      const [dimensions, setDimensions] = useState({ width: 400, height: 200 });
+
+      // Resize observer to make canvas responsive
+      useEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        const updateDimensions = () => {
+          const width = container.offsetWidth;
+          const height = Math.min(300, Math.max(150, width * 0.4));
+          setDimensions({ width, height });
+        };
+
+        updateDimensions();
+        const resizeObserver = new ResizeObserver(updateDimensions);
+        resizeObserver.observe(container);
+
+        return () => resizeObserver.disconnect();
+      }, []);
 
       useEffect(() => {
         if (!audioBuffer || startSample === undefined || endSample === undefined) return;
@@ -205,16 +314,18 @@
         const segment = channelData.slice(startSample, endSample);
 
         const spectrogramData = computeSpectrogram(segment, fftSize);
-        renderSpectrogram(spectrogramData, canvasRef.current, width, height);
-      }, [audioBuffer, startSample, endSample, width, height, fftSize]);
+        renderSpectrogram(spectrogramData, canvasRef.current, dimensions.width, dimensions.height);
+      }, [audioBuffer, startSample, endSample, dimensions.width, dimensions.height, fftSize]);
 
       return (
-        <canvas
-          ref={canvasRef}
-          width={width}
-          height={height}
-          style={{ display: 'block', background: '#000', borderRadius: '4px' }}
-        />
+        <div ref={containerRef} style={{ width: '100%' }}>
+          <canvas
+            ref={canvasRef}
+            width={dimensions.width}
+            height={dimensions.height}
+            className="spectrogram-canvas"
+          />
+        </div>
       );
     }
 
@@ -396,8 +507,6 @@
               audioBuffer={audioBuffer}
               startSample={0}
               endSample={audioBuffer.length}
-              width={800}
-              height={300}
               fftSize={fftSize}
             />
           )}
@@ -469,7 +578,7 @@
         }
       }, [currentPairIdx, currentLabel, pairs.length]);
 
-      const handleSubmit = useCallback((same) => {
+      const handleSubmit = useCallback((resultType) => {
         if (submitting || currentPairIdx >= pairs.length) return;
 
         setSubmitting(true);
@@ -480,7 +589,7 @@
           label: currentLabel,
           anchor_idx: anchorIdx,
           neighbor_idx: neighborIdx,
-          same: same
+          result: resultType
         };
 
         const newResults = [...results, result];
@@ -499,9 +608,11 @@
       useEffect(() => {
         const handleKeyDown = (e) => {
           if (e.key === 'ArrowLeft' || e.key === 's' || e.key === 'S') {
-            handleSubmit(true);
+            handleSubmit('same');
           } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
-            handleSubmit(false);
+            handleSubmit('different');
+          } else if (e.key === 'ArrowDown' || e.key === 'n' || e.key === 'N') {
+            handleSubmit('noise');
           }
         };
         window.addEventListener('keydown', handleKeyDown);
@@ -533,11 +644,16 @@
             <button
               className="btn btn-download"
               onClick={() => downloadResultsCSV(results, currentLabel)}
-              style={{ marginLeft: '10px' }}
             >
               Download {currentLabel} CSV
             </button>
           )}
+          <button
+            className="btn btn-reset"
+            onClick={resetState}
+          >
+            Reset
+          </button>
         </div>
       );
 
@@ -616,22 +732,29 @@
               <div className="buttons-container">
                 <button
                   className="btn btn-same"
-                  onClick={() => handleSubmit(true)}
+                  onClick={() => handleSubmit('same')}
                   disabled={submitting}
                 >
                   Same
                 </button>
                 <button
                   className="btn btn-different"
-                  onClick={() => handleSubmit(false)}
+                  onClick={() => handleSubmit('different')}
                   disabled={submitting}
                 >
                   Different
                 </button>
+                <button
+                  className="btn btn-noise"
+                  onClick={() => handleSubmit('noise')}
+                  disabled={submitting}
+                >
+                  Noise
+                </button>
               </div>
 
               <p className="keyboard-hint">
-                Keyboard: S or Left Arrow = Same | D or Right Arrow = Different
+                Keyboard: S or ← = Same | D or → = Different | N or ↓ = Noise
               </p>
             </>
           )}

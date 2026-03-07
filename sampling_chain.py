@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-Build a sampling chain from embeddings using distance-weighted sampling (k-means++ style):
-1. Build a distance matrix
-2. Take a random example to start
-3. Sample close (prob ~ 1/distance) and far (prob ~ distance) examples
-4. Save the close examples as pairs: anchor, neighbor
-5. Repeat from 3 using the far example without replacement
+Sample pairs from embeddings for labeling:
+1. Generate all unique pairs (i, j) where i < j
+2. Filter to pairs within distance threshold
+3. Randomly sample up to N pairs
 """
 
 import argparse
@@ -23,129 +21,47 @@ def build_distance_matrix(embeddings, metric='cosine'):
     return distances
 
 
-def sample_by_distance(distances, anchor_idx, available_indices, sample_close=True, max_distance=None):
+def sample_pairs(distances, n_pairs=5000, max_distance=None, seed=None):
     """
-    Sample an example using distance-weighted probability (k-means++ style).
+    Sample unique pairs from all possible pairs.
 
     Args:
-        distances: Full distance matrix
-        anchor_idx: Current anchor index
-        available_indices: Set of indices still available for sampling
-        sample_close: If True, prob ~ 1/distance (closer more likely)
-                      If False, prob ~ distance (farther more likely)
-        max_distance: If set and sample_close=True, only consider candidates
-                      within this distance threshold
-
-    Returns:
-        Sampled index, or None if no valid candidates
-    """
-    available_list = list(available_indices)
-
-    if len(available_list) == 0:
-        return None
-    if len(available_list) == 1:
-        return available_list[0]
-
-    # Get distances from anchor to all available indices
-    dists = distances[anchor_idx, available_list]
-
-    # Filter by max_distance threshold for close sampling
-    if sample_close and max_distance is not None:
-        mask = dists <= max_distance
-        if not mask.any():
-            return None  # No candidates within threshold
-        available_list = [available_list[i] for i in range(len(available_list)) if mask[i]]
-        dists = dists[mask]
-
-    # Avoid division by zero
-    dists = np.maximum(dists, 1e-10)
-
-    if sample_close:
-        # Probability proportional to inverse distance (closer = higher prob)
-        weights = 1.0 / dists
-    else:
-        # Probability proportional to distance squared (like k-means++)
-        weights = dists ** 2
-
-    # Normalize to probabilities
-    probs = weights / weights.sum()
-
-    # Sample
-    sampled_idx = np.random.choice(available_list, p=probs)
-    return sampled_idx
-
-
-def build_sampling_chain(embeddings, distances, seed=None, max_distance=None):
-    """
-    Build the sampling chain by traversing the embedding space.
-
-    Args:
-        embeddings: The embedding vectors
-        distances: Precomputed distance matrix
+        distances: Pairwise distance matrix
+        n_pairs: Maximum number of pairs to sample
+        max_distance: If set, only consider pairs within this distance
         seed: Random seed for reproducibility
-        max_distance: Maximum distance threshold for close pairs.
-                      Pairs with distance > max_distance are skipped.
 
     Returns:
-        pairs: List of (anchor_idx, neighbor_idx) tuples
+        pairs: List of (i, j) tuples where i < j
     """
     if seed is not None:
         np.random.seed(seed)
 
-    n_samples = len(embeddings)
-    available = set(range(n_samples))
-    pairs = []
-    skipped = 0
+    n_samples = len(distances)
 
-    # Start with a random example
-    anchor_idx = np.random.choice(list(available))
-    available.remove(anchor_idx)
+    # Get all unique pairs (i, j) where i < j
+    i_indices, j_indices = np.triu_indices(n_samples, k=1)
 
-    print(f"Starting chain from index {anchor_idx}")
-    print(f"Building chain with {n_samples} samples...")
+    # Filter by distance if threshold is set
     if max_distance is not None:
-        print(f"Using max_distance threshold: {max_distance}")
+        pair_distances = distances[i_indices, j_indices]
+        mask = pair_distances <= max_distance
+        i_indices = i_indices[mask]
+        j_indices = j_indices[mask]
+        print(f"  {len(i_indices)} pairs within distance threshold")
 
-    iteration = 0
-    while len(available) >= 1:
-        # Sample close neighbor (prob ~ 1/distance, filtered by max_distance)
-        close_idx = sample_by_distance(distances, anchor_idx, available, sample_close=True, max_distance=max_distance)
+    n_available = len(i_indices)
+    n_to_sample = min(n_pairs, n_available)
 
-        if close_idx is None:
-            # No candidates within threshold, skip this anchor
-            skipped += 1
-            # Try to find a new anchor by sampling far
-            if len(available) == 0:
-                break
-            far_idx = sample_by_distance(distances, anchor_idx, available, sample_close=False)
-            if far_idx is None:
-                break
-            anchor_idx = far_idx
-            available.discard(far_idx)
-            continue
+    # Randomly sample pairs
+    if n_to_sample < n_available:
+        selected = np.random.choice(n_available, size=n_to_sample, replace=False)
+        i_indices = i_indices[selected]
+        j_indices = j_indices[selected]
 
-        # Save the anchor-neighbor pair
-        pairs.append((anchor_idx, close_idx))
-        available.discard(close_idx)
+    pairs = list(zip(i_indices.tolist(), j_indices.tolist()))
+    print(f"  Sampled {len(pairs)} pairs")
 
-        if len(available) == 0:
-            break
-
-        # Sample far example (prob ~ distance^2, k-means++ style)
-        far_idx = sample_by_distance(distances, anchor_idx, available, sample_close=False)
-
-        if far_idx is None:
-            break
-
-        # Move to the far example for the next iteration
-        anchor_idx = far_idx
-        available.discard(far_idx)
-
-        iteration += 1
-        if iteration % 1000 == 0:
-            print(f"  Processed {iteration} iterations, {len(available)} samples remaining...")
-
-    print(f"Generated {len(pairs)} pairs (skipped {skipped} anchors with no close neighbors)")
     return pairs
 
 
@@ -161,7 +77,7 @@ def embeddings_by_label(embeddings, labels):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Build sampling chain from embeddings'
+        description='Sample pairs from embeddings for labeling'
     )
     parser.add_argument(
         '--embeddings', type=str, default='embeddings.npy',
@@ -169,7 +85,7 @@ def main():
     )
     parser.add_argument(
         '--labels', type=str, default='embeddings.labels.npy',
-        help='Path to labels file (.npy format). If provided, generates one chain per label.'
+        help='Path to labels file (.npy format). If provided, generates pairs per label.'
     )
     parser.add_argument(
         '--output', type=str, default='sampling_pairs.json',
@@ -185,10 +101,14 @@ def main():
         help='Random seed for reproducibility'
     )
     parser.add_argument(
-        '--distance-percentile', type=float, default=0.1,
+        '--n-pairs', type=int, default=5000,
+        help='Maximum number of pairs to sample per label (default: 5000)'
+    )
+    parser.add_argument(
+        '--distance-percentile', type=float, default=None,
         help='Percentile of distance distribution to use as threshold (0-1). '
-             'Only pairs with distance <= this percentile are considered close. '
-             'Default: 0.1 (10th percentile).'
+             'Only pairs with distance <= this percentile are included. '
+             'If not set, no distance filtering is applied.'
     )
 
     args = parser.parse_args()
@@ -221,17 +141,20 @@ def main():
             # Build distance matrix for this label's embeddings
             distances = build_distance_matrix(label_embeddings, metric=args.metric)
 
-            # Compute distance threshold from percentile
-            upper_tri_indices = np.triu_indices(len(distances), k=1)
-            upper_tri_distances = distances[upper_tri_indices]
-            max_distance = np.percentile(upper_tri_distances, args.distance_percentile * 100)
-            print(f"  Distance threshold at {args.distance_percentile:.1%} percentile: {max_distance:.4f}")
+            # Compute distance threshold from percentile if set
+            max_distance = None
+            if args.distance_percentile is not None:
+                upper_tri_indices = np.triu_indices(len(distances), k=1)
+                upper_tri_distances = distances[upper_tri_indices]
+                max_distance = np.percentile(upper_tri_distances, args.distance_percentile * 100)
+                print(f"  Distance threshold at {args.distance_percentile:.1%} percentile: {max_distance:.4f}")
 
-            # Build sampling chain
-            pairs = build_sampling_chain(
-                label_embeddings, distances,
-                seed=args.seed,
-                max_distance=max_distance
+            # Sample pairs
+            pairs = sample_pairs(
+                distances,
+                n_pairs=args.n_pairs,
+                max_distance=max_distance,
+                seed=args.seed
             )
 
             # Convert local indices back to original indices
@@ -243,25 +166,27 @@ def main():
                 json.dump(pairs_original, f)
             print(f"  Saved {len(pairs)} pairs to: {label_output}")
     else:
-        # Original behavior: process all embeddings together
-        # Build distance matrix
+        # Process all embeddings together
         distances = build_distance_matrix(embeddings, metric=args.metric)
         print(f"Distance matrix shape: {distances.shape}")
 
-        # Compute distance threshold from percentile
-        upper_tri_indices = np.triu_indices(len(distances), k=1)
-        upper_tri_distances = distances[upper_tri_indices]
-        max_distance = np.percentile(upper_tri_distances, args.distance_percentile * 100)
-        print(f"Distance threshold at {args.distance_percentile:.1%} percentile: {max_distance:.4f}")
+        # Compute distance threshold from percentile if set
+        max_distance = None
+        if args.distance_percentile is not None:
+            upper_tri_indices = np.triu_indices(len(distances), k=1)
+            upper_tri_distances = distances[upper_tri_indices]
+            max_distance = np.percentile(upper_tri_distances, args.distance_percentile * 100)
+            print(f"Distance threshold at {args.distance_percentile:.1%} percentile: {max_distance:.4f}")
 
-        # Build sampling chain
-        pairs = build_sampling_chain(
-            embeddings, distances,
-            seed=args.seed,
-            max_distance=max_distance
+        # Sample pairs
+        pairs = sample_pairs(
+            distances,
+            n_pairs=args.n_pairs,
+            max_distance=max_distance,
+            seed=args.seed
         )
 
-        # Convert to list and save as JSON
+        # Save as JSON
         pairs_list = [[int(a), int(b)] for a, b in pairs]
         output_path = Path(args.output)
         with open(output_path, 'w') as f:
