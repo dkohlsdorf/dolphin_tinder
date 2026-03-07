@@ -448,9 +448,11 @@
     // Audio Panel with spectrogram and playback - loads individual segment file
     function AudioPanel({ title, segmentIdx, fftSize }) {
       const [audioBuffer, setAudioBuffer] = useState(null);
-      const [audioUrl, setAudioUrl] = useState(null);
       const [loading, setLoading] = useState(true);
       const [error, setError] = useState(null);
+
+      // Direct URL for audio playback (supports range requests)
+      const audioUrl = segmentIdx !== undefined ? `/data/segments/${segmentIdx}.wav` : null;
 
       useEffect(() => {
         if (segmentIdx === undefined) return;
@@ -468,7 +470,7 @@
             if (cancelled) return;
 
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+            const decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
 
             if (cancelled) {
               audioCtx.close();
@@ -476,10 +478,6 @@
             }
 
             setAudioBuffer(decoded);
-
-            // Create blob URL for audio playback
-            const blob = new Blob([arrayBuffer], { type: 'audio/wav' });
-            setAudioUrl(URL.createObjectURL(blob));
             setLoading(false);
           } catch (err) {
             if (!cancelled) {
@@ -493,7 +491,6 @@
 
         return () => {
           cancelled = true;
-          if (audioUrl) URL.revokeObjectURL(audioUrl);
         };
       }, [segmentIdx]);
 

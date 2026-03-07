@@ -26,7 +26,7 @@ def index():
 @app.route('/data/<path:filename>')
 def serve_data(filename):
     """Serve files from the data directory."""
-    return send_from_directory(DATA_DIR, filename)
+    return send_from_directory(DATA_DIR, filename, conditional=True)
 
 
 @app.route('/pairs/<path:filename>')
